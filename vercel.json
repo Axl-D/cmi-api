@@ -8,8 +8,20 @@
   ],
   "routes": [
     {
-      "src": "/(.*)",
-      "dest": "server.js"
+      "src": "/api/(.*)",
+      "dest": "/server.js"
+    },
+    {
+      "src": "/success",
+      "dest": "/server.js"
+    },
+    {
+      "src": "/failure",
+      "dest": "/server.js"
+    },
+    {
+      "src": "/health",
+      "dest": "/server.js"
     }
   ],
   "env": {
