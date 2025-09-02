@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CMI Payment Integration</title>
+    <style>
+      body {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="cmi-form-container" style="display: none"></div>
+
+    <script>
+      // Configuration - Payment data will be set by Bubble.io
+      const CONFIG = {
+        apiUrl: "http://localhost:3000/api/payments",
+        paymentData: {
+          amount: 100, // Amount in MAD
+          email: "test@example.com", // Customer email
+          name: "John Doe", // Customer name
+          phone: "+212600000000", // Customer phone
+          description: "Test Payment", // Payment description
+        },
+      };
+
+      // Process payment
+      async function processPayment() {
+        try {
+          const response = await fetch(`${CONFIG.apiUrl}/create`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(CONFIG.paymentData),
+          });
+
+          const result = await response.json();
+
+          if (!response.ok) {
+            throw new Error(result.error || "Payment creation failed");
+          }
+
+          // Submit to CMI
+          const container = document.getElementById("cmi-form-container");
+          container.innerHTML = result.paymentForm;
+          const cmiForm = container.querySelector("form");
+          cmiForm.submit();
+        } catch (error) {
+          console.error("Payment error:", error);
+        }
+      }
+
+      // Make only processPayment globally available
+      window.processPayment = processPayment;
+    </script>
+  </body>
+</html>
