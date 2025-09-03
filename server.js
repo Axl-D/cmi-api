@@ -228,7 +228,7 @@ async function notifyBubbleIOFromCMI(formData, status) {
   return response.json();
 }
 
-// Hash verification function with debugging
+// Hash verification function - Based on working code
 function verifyCMIHash(formData) {
   try {
     const storeKey = CMI_CONFIG.storekey;
@@ -241,7 +241,7 @@ function verifyCMIHash(formData) {
       }
     }
 
-    // Sort parameters
+    // Sort the parameters in a case-insensitive manner
     postParams.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
     let hashval = "";
@@ -255,8 +255,8 @@ function verifyCMIHash(formData) {
       const escapedParamValue = paramValue.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
       const lowerParam = param.toLowerCase();
 
-      // ✅ EXCLUDE customData from hash calculation
-      if (lowerParam !== "hash" && lowerParam !== "encoding" && lowerParam !== "customdata") {
+      // ✅ EXCLUDE hash and encoding (same as working code)
+      if (lowerParam !== "hash" && lowerParam !== "encoding") {
         hashval += escapedParamValue + "|";
         console.log(`Adding to hash: ${param} = ${escapedParamValue}`);
       } else {
@@ -264,12 +264,12 @@ function verifyCMIHash(formData) {
       }
     });
 
-    // Escape store key and append
+    // Escape the store key and append to hashval
     const escapedStoreKey = storeKey?.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
     hashval += escapedStoreKey;
     console.log("Final hash string:", hashval);
 
-    // Generate hash
+    // Generate the hash using SHA512
     const calculatedHashValue = crypto.createHash("sha512").update(hashval).digest("hex");
     const actualHash = Buffer.from(calculatedHashValue, "hex").toString("base64");
 
