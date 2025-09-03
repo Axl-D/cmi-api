@@ -1,7 +1,21 @@
 const express = require("express");
 const crypto = require("crypto");
 const cmi = require("cmi-payment-nodejs");
+const { createClient } = require("redis");
 require("dotenv").config(); // Add this line at the top
+
+// Create Redis client using REDIS_URL
+const redis = createClient({
+  url: process.env.REDIS_URL,
+  socket: {
+    connectTimeout: 10000, // 10 seconds
+    commandTimeout: 5000, // 5 seconds
+  },
+});
+
+// Connect to Redis
+redis.on("error", (err) => console.log("Redis Client Error", err));
+redis.connect().then(() => console.log("Connected to Redis"));
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -43,6 +57,8 @@ console.log("CMI Config:", {
   callbackURL: CMI_CONFIG.callbackURL,
 });
 
+// Redis storage for transaction data (replaces in-memory Map)
+
 // Create payment endpoint
 app.post("/api/payments/create", async (req, res) => {
   try {
@@ -55,6 +71,8 @@ app.post("/api/payments/create", async (req, res) => {
       // Custom data fields
       guest_id,
       donated_to,
+      donation_amount,
+      access_price,
     } = req.body;
 
     // Validate required fields
@@ -78,13 +96,35 @@ app.post("/api/payments/create", async (req, res) => {
       amount: amount.toString(),
       callbackURL: CMI_CONFIG.callbackURL,
       tel: phone,
-
-      // Pass custom data to CMI (if supported)
-      customData: JSON.stringify({
-        guest_id: guest_id,
-        donated_to: donated_to,
-      }),
+      // NO customData here - this prevents hash verification issues
     });
+
+    // Store transaction with custom data in Redis
+    const transactionData = {
+      id: transactionId,
+      amount: parseFloat(amount),
+      email,
+      phone,
+      name,
+      description: description || "Payment",
+      status: "pending",
+      createdAt: new Date().toISOString(),
+
+      // Store custom data for later use
+      guest_id: guest_id,
+      donated_to: donated_to,
+      donation_amount: donation_amount,
+      access_price: access_price,
+    };
+
+    try {
+      // Store in Redis with 1 hour expiration (3600 seconds)
+      await redis.setEx(`transaction:${transactionId}`, 3600, JSON.stringify(transactionData));
+      console.log("Transaction stored in Redis:", transactionId);
+    } catch (redisError) {
+      console.error("Failed to store transaction in Redis:", redisError);
+      // Continue with payment creation even if Redis storage fails
+    }
 
     // DEBUG: Log what we're sending to CMI
     console.log("=== PAYMENT CREATION DEBUG ===");
@@ -102,10 +142,10 @@ app.post("/api/payments/create", async (req, res) => {
       amount: amount.toString(),
       callbackURL: CMI_CONFIG.callbackURL,
       tel: phone,
-      customData: JSON.stringify({
-        guest_id: guest_id,
-        donated_to: donated_to,
-      }),
+      //   customData: JSON.stringify({
+      //     guest_id: guest_id,
+      //     donated_to: donated_to,
+      //   }),
     });
     console.log("==============================");
 
@@ -123,10 +163,11 @@ app.post("/api/payments/create", async (req, res) => {
   }
 });
 
-// CMI Callback endpoint - NO TRANSACTION STORAGE NEEDED
+// CMI Callback endpoint
 app.post("/api/payments/callback", async (req, res) => {
   try {
     const formData = req.body;
+    console.log("CMI Callback received:", formData);
 
     // Get transaction ID
     const transactionId = formData.ReturnOid || formData.oid;
@@ -135,35 +176,69 @@ app.post("/api/payments/callback", async (req, res) => {
       return res.status(400).send("Missing transaction ID");
     }
 
-    // DEBUG: Compare what we sent vs what we received
-    console.log("=== CALLBACK COMPARISON DEBUG ===");
-    console.log("Transaction ID:", transactionId);
-    console.log("Fields received from CMI:");
-    console.log("Total fields:", Object.keys(formData).length);
-    console.log("Field names:", Object.keys(formData).sort());
-    console.log("=================================");
+    // Retrieve transaction from Redis
+    let transaction = null;
+    try {
+      const storedData = await redis.get(`transaction:${transactionId}`);
+      if (storedData) {
+        transaction = JSON.parse(storedData);
+        console.log("Transaction retrieved from Redis:", transactionId);
+      } else {
+        console.error("Transaction not found in Redis:", transactionId);
+        return res.status(404).send("Transaction not found");
+      }
+    } catch (redisError) {
+      console.error("Failed to retrieve transaction from Redis:", redisError);
+      return res.status(500).send("Database error");
+    }
 
     // Verify hash (this is the critical security step)
     const isHashValid = verifyCMIHash(formData);
 
     if (isHashValid) {
       if (formData.ProcReturnCode === "00") {
+        // Payment successful - UPDATE TRANSACTION
+        transaction.status = "completed";
+        transaction.completedAt = new Date().toISOString();
+        transaction.cmiResponse = formData;
+
+        // Update transaction in Redis
+        try {
+          await redis.setEx(`transaction:${transactionId}`, 3600, JSON.stringify(transaction));
+        } catch (redisError) {
+          console.error("Failed to update transaction in Redis:", redisError);
+        }
+
         console.log("Payment successful:", transactionId);
 
-        // NOTIFY BUBBLE.IO with data from CMI callback
+        // NOTIFY BUBBLE.IO
         try {
-          await notifyBubbleIOFromCMI(formData, "success");
+          await notifyBubbleIO(transaction, "success");
           console.log("Bubble.io notified of successful payment");
         } catch (bubbleError) {
           console.error("Failed to notify Bubble.io:", bubbleError);
+          // Don't fail the payment - log the error but still confirm to CMI
         }
 
         res.send("ACTION=POSTAUTH");
       } else {
+        // Payment failed - UPDATE TRANSACTION
+        transaction.status = "failed";
+        transaction.failedAt = new Date().toISOString();
+        transaction.cmiResponse = formData;
+
+        // Update transaction in Redis
+        try {
+          await redis.setEx(`transaction:${transactionId}`, 3600, JSON.stringify(transaction));
+        } catch (redisError) {
+          console.error("Failed to update transaction in Redis:", redisError);
+        }
+
         console.log("Payment failed:", transactionId);
 
+        // NOTIFY BUBBLE.IO
         try {
-          await notifyBubbleIOFromCMI(formData, "failed");
+          await notifyBubbleIO(transaction, "failed");
           console.log("Bubble.io notified of failed payment");
         } catch (bubbleError) {
           console.error("Failed to notify Bubble.io:", bubbleError);
@@ -172,7 +247,28 @@ app.post("/api/payments/callback", async (req, res) => {
         res.send("APPROVED");
       }
     } else {
-      console.log("Hash verification failed:", transactionId);
+      // Hash verification failed - SECURITY BREACH
+      transaction.status = "failed";
+      transaction.failedAt = new Date().toISOString();
+      transaction.cmiResponse = formData;
+
+      // Update transaction in Redis
+      try {
+        await redis.setEx(`transaction:${transactionId}`, 3600, JSON.stringify(transaction));
+      } catch (redisError) {
+        console.error("Failed to update transaction in Redis:", redisError);
+      }
+
+      console.log("Hash verification failed - SECURITY ALERT:", transactionId);
+
+      // NOTIFY BUBBLE.IO OF SECURITY ISSUE
+      try {
+        await notifyBubbleIO(transaction, "security_failed");
+        console.log("Bubble.io notified of security failure");
+      } catch (bubbleError) {
+        console.error("Failed to notify Bubble.io:", bubbleError);
+      }
+
       res.send("FAILED");
     }
   } catch (error) {
@@ -181,58 +277,58 @@ app.post("/api/payments/callback", async (req, res) => {
   }
 });
 
-// Function to notify Bubble.io using CMI data
-async function notifyBubbleIOFromCMI(formData, status) {
-  // Parse custom data from CMI response
-  let customData = {};
-  try {
-    if (formData.customData) {
-      // Decode HTML entities and parse JSON
-      const decodedCustomData = formData.customData.replace(/&#34;/g, '"').replace(/&#39;/g, "'");
-      customData = JSON.parse(decodedCustomData);
-    }
-  } catch (error) {
-    console.error("Error parsing custom data:", error);
-  }
-
+// Function to notify Bubble.io with custom data
+async function notifyBubbleIO(transaction, status) {
   const bubbleData = {
-    transactionId: formData.ReturnOid || formData.oid,
-    amount: parseFloat(formData.amount),
-    email: formData.email,
-    name: formData.BillToName,
-    phone: formData.tel,
-    status: status,
-    completedAt: new Date().toISOString(),
-    cmiResponse: formData,
+    transactionId: transaction.id,
+    amount: transaction.amount,
+    email: transaction.email,
+    name: transaction.name,
+    phone: transaction.phone,
+    description: transaction.description,
+    status: status, // "success", "failed", or "security_failed"
+    completedAt: transaction.completedAt,
+    failedAt: transaction.failedAt,
+    cmiResponse: transaction.cmiResponse,
 
-    // Custom data from CMI
-    guest_id: customData.guest_id,
-    donated_to: customData.donated_to,
+    // Include custom data from stored transaction
+    guest_id: transaction.guest_id,
+    donated_to: transaction.donated_to,
+    donation_amount: transaction.donation_amount,
+    access_price: transaction.access_price,
   };
 
+  // Call your Bubble.io endpoint
   const response = await fetch(process.env.BUBBLE_ENDPOINT_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.BUBBLE_API_KEY}`,
+      Authorization: `Bearer ${process.env.BUBBLE_API_KEY}`, // If you need API key
       "User-Agent": "CMI-Payment-Integration/1.0",
     },
     body: JSON.stringify(bubbleData),
-    timeout: 10000,
+    timeout: 10000, // 10 second timeout
   });
 
   if (!response.ok) {
     throw new Error(`Bubble.io API returned ${response.status}: ${response.statusText}`);
   }
 
-  return response.json();
+  const result = await response.json();
+  console.log("Bubble.io response:", result);
+  return result;
 }
 
-// Hash verification function - Based on working code
+// Hash verification function with comprehensive logging
 function verifyCMIHash(formData) {
   try {
     const storeKey = CMI_CONFIG.storekey;
     const postParams = [];
+
+    console.log("=== HASH VERIFICATION DEBUG ===");
+    console.log("Store key from env:", storeKey ? "SET" : "NOT SET");
+    console.log("Store key value:", storeKey);
+    console.log("CMI Config:", CMI_CONFIG);
 
     // Get all POST parameters
     for (const key in formData) {
@@ -241,21 +337,21 @@ function verifyCMIHash(formData) {
       }
     }
 
-    // Sort the parameters in a case-insensitive manner
+    // Sort parameters
     postParams.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
     let hashval = "";
 
-    console.log("=== HASH VERIFICATION DEBUG ===");
-    console.log("Store key:", storeKey ? "SET" : "NOT SET");
+    console.log("Total fields received:", postParams.length);
     console.log("Sorted parameters:", postParams);
 
     postParams.forEach((param) => {
-      const paramValue = decodeURIComponent(formData[param].replace(/\n$/, ""));
+      // Remove trailing newlines and decode URI components
+      const paramValue = decodeURIComponent(formData[param].replace(/\n$/, "").replace(/\r$/, ""));
+
       const escapedParamValue = paramValue.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
       const lowerParam = param.toLowerCase();
 
-      // ✅ EXCLUDE hash and encoding (same as working code)
       if (lowerParam !== "hash" && lowerParam !== "encoding") {
         hashval += escapedParamValue + "|";
         console.log(`Adding to hash: ${param} = ${escapedParamValue}`);
@@ -264,12 +360,13 @@ function verifyCMIHash(formData) {
       }
     });
 
-    // Escape the store key and append to hashval
+    // Escape store key and append
     const escapedStoreKey = storeKey?.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
     hashval += escapedStoreKey;
     console.log("Final hash string:", hashval);
+    console.log("Hash string length:", hashval.length);
 
-    // Generate the hash using SHA512
+    // Generate hash
     const calculatedHashValue = crypto.createHash("sha512").update(hashval).digest("hex");
     const actualHash = Buffer.from(calculatedHashValue, "hex").toString("base64");
 
@@ -278,6 +375,7 @@ function verifyCMIHash(formData) {
     console.log("Calculated hash:", actualHash);
     console.log("Retrieved hash:", retrievedHash);
     console.log("Hash match:", retrievedHash === actualHash);
+    console.log("Hash lengths - Calculated:", actualHash.length, "Retrieved:", retrievedHash.length);
     console.log("================================");
 
     return retrievedHash === actualHash;
@@ -286,6 +384,33 @@ function verifyCMIHash(formData) {
     return false;
   }
 }
+
+// Get transaction status
+app.get("/api/payments/status/:transactionId", async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+
+    // Retrieve transaction from Redis
+    const storedData = await redis.get(`transaction:${transactionId}`);
+    if (!storedData) {
+      return res.status(404).json({ error: "Transaction not found" });
+    }
+
+    const transaction = JSON.parse(storedData);
+
+    res.json({
+      transactionId: transaction.id,
+      status: transaction.status,
+      amount: transaction.amount,
+      createdAt: transaction.createdAt,
+      completedAt: transaction.completedAt,
+      failedAt: transaction.failedAt,
+    });
+  } catch (error) {
+    console.error("Error retrieving transaction status:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // Success page
 app.get("/success", (req, res) => {
