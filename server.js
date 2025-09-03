@@ -127,7 +127,7 @@ app.post("/api/payments/create", async (req, res) => {
 app.post("/api/payments/callback", async (req, res) => {
   try {
     const formData = req.body;
-    
+
     // Get transaction ID
     const transactionId = formData.ReturnOid || formData.oid;
 
@@ -255,9 +255,12 @@ function verifyCMIHash(formData) {
       const escapedParamValue = paramValue.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
       const lowerParam = param.toLowerCase();
 
-      if (lowerParam !== "hash" && lowerParam !== "encoding") {
+      // ✅ EXCLUDE customData from hash calculation
+      if (lowerParam !== "hash" && lowerParam !== "encoding" && lowerParam !== "customdata") {
         hashval += escapedParamValue + "|";
         console.log(`Adding to hash: ${param} = ${escapedParamValue}`);
+      } else {
+        console.log(`EXCLUDED from hash: ${param} = ${escapedParamValue}`);
       }
     });
 
