@@ -198,7 +198,7 @@ async function notifyBubbleIOFromCMI(formData, status) {
   return response.json();
 }
 
-// Hash verification function (based on your code)
+// Hash verification function with debugging
 function verifyCMIHash(formData) {
   try {
     const storeKey = CMI_CONFIG.storekey;
@@ -216,26 +216,36 @@ function verifyCMIHash(formData) {
 
     let hashval = "";
 
+    console.log("=== HASH VERIFICATION DEBUG ===");
+    console.log("Store key:", storeKey ? "SET" : "NOT SET");
+    console.log("Sorted parameters:", postParams);
+
     postParams.forEach((param) => {
       const paramValue = decodeURIComponent(formData[param].replace(/\n$/, ""));
-
       const escapedParamValue = paramValue.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
       const lowerParam = param.toLowerCase();
 
       if (lowerParam !== "hash" && lowerParam !== "encoding") {
         hashval += escapedParamValue + "|";
+        console.log(`Adding to hash: ${param} = ${escapedParamValue}`);
       }
     });
 
     // Escape store key and append
     const escapedStoreKey = storeKey?.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
     hashval += escapedStoreKey;
+    console.log("Final hash string:", hashval);
 
     // Generate hash
     const calculatedHashValue = crypto.createHash("sha512").update(hashval).digest("hex");
     const actualHash = Buffer.from(calculatedHashValue, "hex").toString("base64");
 
     const retrievedHash = formData.HASH;
+
+    console.log("Calculated hash:", actualHash);
+    console.log("Retrieved hash:", retrievedHash);
+    console.log("Hash match:", retrievedHash === actualHash);
+    console.log("================================");
 
     return retrievedHash === actualHash;
   } catch (error) {
