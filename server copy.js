@@ -43,6 +43,9 @@ console.log("CMI Config:", {
   callbackURL: CMI_CONFIG.callbackURL,
 });
 
+// In-memory storage for demo (use a database in production)
+const transactions = new Map();
+
 // Create payment endpoint
 app.post("/api/payments/create", async (req, res) => {
   try {
@@ -86,6 +89,22 @@ app.post("/api/payments/create", async (req, res) => {
       }),
     });
 
+    // Store transaction with custom data
+    transactions.set(transactionId, {
+      id: transactionId,
+      amount: parseFloat(amount),
+      email,
+      phone,
+      name,
+      description: description || "Payment",
+      status: "pending",
+      createdAt: new Date(),
+
+      // Store custom data
+      guest_id: guest_id,
+      donated_to: donated_to,
+    });
+
     // Generate payment form
     const paymentForm = CmiClient.redirect_post();
 
@@ -100,7 +119,7 @@ app.post("/api/payments/create", async (req, res) => {
   }
 });
 
-// CMI Callback endpoint - NO TRANSACTION STORAGE NEEDED
+// CMI Callback endpoint
 app.post("/api/payments/callback", async (req, res) => {
   try {
     const formData = req.body;
@@ -113,27 +132,46 @@ app.post("/api/payments/callback", async (req, res) => {
       return res.status(400).send("Missing transaction ID");
     }
 
+    // Find transaction
+    const transaction = transactions.get(transactionId);
+    if (!transaction) {
+      console.error("Transaction not found:", transactionId);
+      return res.status(404).send("Transaction not found");
+    }
+
     // Verify hash (this is the critical security step)
     const isHashValid = verifyCMIHash(formData);
 
     if (isHashValid) {
       if (formData.ProcReturnCode === "00") {
+        // Payment successful - UPDATE TRANSACTION
+        transaction.status = "completed";
+        transaction.completedAt = new Date();
+        transaction.cmiResponse = formData;
+
         console.log("Payment successful:", transactionId);
 
-        // NOTIFY BUBBLE.IO with data from CMI callback
+        // NOTIFY BUBBLE.IO
         try {
-          await notifyBubbleIOFromCMI(formData, "success");
+          await notifyBubbleIO(transaction, "success");
           console.log("Bubble.io notified of successful payment");
         } catch (bubbleError) {
           console.error("Failed to notify Bubble.io:", bubbleError);
+          // Don't fail the payment - log the error but still confirm to CMI
         }
 
         res.send("ACTION=POSTAUTH");
       } else {
+        // Payment failed - UPDATE TRANSACTION
+        transaction.status = "failed";
+        transaction.failedAt = new Date();
+        transaction.cmiResponse = formData;
+
         console.log("Payment failed:", transactionId);
 
+        // NOTIFY BUBBLE.IO
         try {
-          await notifyBubbleIOFromCMI(formData, "failed");
+          await notifyBubbleIO(transaction, "failed");
           console.log("Bubble.io notified of failed payment");
         } catch (bubbleError) {
           console.error("Failed to notify Bubble.io:", bubbleError);
@@ -142,7 +180,21 @@ app.post("/api/payments/callback", async (req, res) => {
         res.send("APPROVED");
       }
     } else {
-      console.log("Hash verification failed:", transactionId);
+      // Hash verification failed - SECURITY BREACH
+      transaction.status = "failed";
+      transaction.failedAt = new Date();
+      transaction.cmiResponse = formData;
+
+      console.log("Hash verification failed - SECURITY ALERT:", transactionId);
+
+      // NOTIFY BUBBLE.IO OF SECURITY ISSUE
+      try {
+        await notifyBubbleIO(transaction, "security_failed");
+        console.log("Bubble.io notified of security failure");
+      } catch (bubbleError) {
+        console.error("Failed to notify Bubble.io:", bubbleError);
+      }
+
       res.send("FAILED");
     }
   } catch (error) {
@@ -151,51 +203,44 @@ app.post("/api/payments/callback", async (req, res) => {
   }
 });
 
-// Function to notify Bubble.io using CMI data
-async function notifyBubbleIOFromCMI(formData, status) {
-  // Parse custom data from CMI response
-  let customData = {};
-  try {
-    if (formData.customData) {
-      // Decode HTML entities and parse JSON
-      const decodedCustomData = formData.customData.replace(/&#34;/g, '"').replace(/&#39;/g, "'");
-      customData = JSON.parse(decodedCustomData);
-    }
-  } catch (error) {
-    console.error("Error parsing custom data:", error);
-  }
-
+// Function to notify Bubble.io with custom data
+async function notifyBubbleIO(transaction, status) {
   const bubbleData = {
-    transactionId: formData.ReturnOid || formData.oid,
-    amount: parseFloat(formData.amount),
-    email: formData.email,
-    name: formData.BillToName,
-    phone: formData.tel,
-    status: status,
-    completedAt: new Date().toISOString(),
-    cmiResponse: formData,
+    transactionId: transaction.id,
+    amount: transaction.amount,
+    email: transaction.email,
+    name: transaction.name,
+    phone: transaction.phone,
+    description: transaction.description,
+    status: status, // "success", "failed", or "security_failed"
+    completedAt: transaction.completedAt,
+    failedAt: transaction.failedAt,
+    cmiResponse: transaction.cmiResponse,
 
-    // Custom data from CMI
-    guest_id: customData.guest_id,
-    donated_to: customData.donated_to,
+    // Include custom data in Bubble.io notification
+    guest_id: transaction.guest_id,
+    donated_to: transaction.donated_to,
   };
 
+  // Call your Bubble.io endpoint
   const response = await fetch(process.env.BUBBLE_ENDPOINT_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.BUBBLE_API_KEY}`,
+      Authorization: `Bearer ${process.env.BUBBLE_API_KEY}`, // If you need API key
       "User-Agent": "CMI-Payment-Integration/1.0",
     },
     body: JSON.stringify(bubbleData),
-    timeout: 10000,
+    timeout: 10000, // 10 second timeout
   });
 
   if (!response.ok) {
     throw new Error(`Bubble.io API returned ${response.status}: ${response.statusText}`);
   }
 
-  return response.json();
+  const result = await response.json();
+  console.log("Bubble.io response:", result);
+  return result;
 }
 
 // Hash verification function (based on your code)
@@ -243,6 +288,25 @@ function verifyCMIHash(formData) {
     return false;
   }
 }
+
+// Get transaction status
+app.get("/api/payments/status/:transactionId", (req, res) => {
+  const { transactionId } = req.params;
+  const transaction = transactions.get(transactionId);
+
+  if (!transaction) {
+    return res.status(404).json({ error: "Transaction not found" });
+  }
+
+  res.json({
+    transactionId: transaction.id,
+    status: transaction.status,
+    amount: transaction.amount,
+    createdAt: transaction.createdAt,
+    completedAt: transaction.completedAt,
+    failedAt: transaction.failedAt,
+  });
+});
 
 // Success page
 app.get("/success", (req, res) => {
