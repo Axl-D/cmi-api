@@ -43,6 +43,25 @@
             throw new Error(result.error || "Payment creation failed");
           }
 
+          // ✅ STORE TRANSACTION ID FOR BUBBLE.IO
+          const transactionId = result.transactionId;
+          console.log(transactionId);
+
+          // ✅ MAKE IT AVAILABLE TO BUBBLE.IO
+          window.paymentTransactionId = transactionId;
+
+          // ✅ TRIGGER BUBBLE.IO EVENT
+          if (window.parent && window.parent.postMessage) {
+            window.parent.postMessage(
+              {
+                type: "PAYMENT_CREATED",
+                transactionId: transactionId,
+                paymentData: CONFIG.paymentData,
+              },
+              "*"
+            );
+          }
+
           // Submit to CMI
           const container = document.getElementById("cmi-form-container");
           container.innerHTML = result.paymentForm;
@@ -53,8 +72,14 @@
         }
       }
 
-      // Make only processPayment globally available
+      // ✅ FUNCTION TO GET TRANSACTION ID (for Bubble.io to call)
+      function getTransactionId() {
+        return window.paymentTransactionId || null;
+      }
+
+      // Make functions globally available
       window.processPayment = processPayment;
+      window.getTransactionId = getTransactionId;
     </script>
   </body>
 </html>

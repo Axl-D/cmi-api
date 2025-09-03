@@ -49,7 +49,16 @@ const transactions = new Map();
 // Create payment endpoint
 app.post("/api/payments/create", async (req, res) => {
   try {
-    const { amount, email, phone, name, description } = req.body;
+    const {
+      amount,
+      email,
+      phone,
+      name,
+      description,
+      // Custom data fields
+      guest_id,
+      donated_to,
+    } = req.body;
 
     // Validate required fields
     if (!amount || !email || !phone || !name) {
@@ -72,9 +81,15 @@ app.post("/api/payments/create", async (req, res) => {
       amount: amount.toString(),
       callbackURL: CMI_CONFIG.callbackURL,
       tel: phone,
+
+      // Pass custom data to CMI (if supported)
+      customData: JSON.stringify({
+        guest_id: guest_id,
+        donated_to: donated_to,
+      }),
     });
 
-    // Store transaction
+    // Store transaction with custom data
     transactions.set(transactionId, {
       id: transactionId,
       amount: parseFloat(amount),
@@ -84,6 +99,10 @@ app.post("/api/payments/create", async (req, res) => {
       description: description || "Payment",
       status: "pending",
       createdAt: new Date(),
+
+      // Store custom data
+      guest_id: guest_id,
+      donated_to: donated_to,
     });
 
     // Generate payment form
@@ -184,7 +203,7 @@ app.post("/api/payments/callback", async (req, res) => {
   }
 });
 
-// Function to notify Bubble.io
+// Function to notify Bubble.io with custom data
 async function notifyBubbleIO(transaction, status) {
   const bubbleData = {
     transactionId: transaction.id,
@@ -197,6 +216,10 @@ async function notifyBubbleIO(transaction, status) {
     completedAt: transaction.completedAt,
     failedAt: transaction.failedAt,
     cmiResponse: transaction.cmiResponse,
+
+    // Include custom data in Bubble.io notification
+    guest_id: transaction.guest_id,
+    donated_to: transaction.donated_to,
   };
 
   // Call your Bubble.io endpoint
