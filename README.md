@@ -5,31 +5,52 @@ A Node.js API for integrating with CMI (Credit Mutuel du Maroc) payment gateway,
 ## Features
 
 - ✅ CMI Payment Gateway Integration
-- ✅ Secure hash verification
-- ✅ Bubble.io webhook notifications
-- ✅ Transaction status tracking
-- ✅ CORS support for web applications
-- ✅ Health check endpoint
+- ✅ Secure SHA-512 hash verification
+- ✅ Redis data storage with automatic expiration
+- ✅ Bubble.io webhook notifications with custom data
+- ✅ Vercel deployment ready
 
 ## API Endpoints
 
 ### Create Payment
+
 ```
 POST /api/payments/create
 ```
 
 **Request Body:**
+
 ```json
 {
-  "amount": 100.00,
+  "amount": 100.0,
   "email": "customer@example.com",
   "phone": "+212600000000",
   "name": "John Doe",
-  "description": "Payment for services"
+  "description": "Payment for services",
+  "guest_id": "1234567890",
+  "donated_to": "Test Donation",
+  "donation_amount": 5,
+  "access_price": 50
 }
 ```
 
+**Required Fields:**
+
+- `amount` - Payment amount in MAD
+- `email` - Customer email
+- `phone` - Customer phone number
+- `name` - Customer name
+
+**Optional Custom Fields:**
+
+- `description` - Payment description
+- `guest_id` - Guest identifier
+- `donated_to` - Donation recipient
+- `donation_amount` - Donation amount
+- `access_price` - Access price
+
 **Response:**
+
 ```json
 {
   "success": true,
@@ -38,127 +59,174 @@ POST /api/payments/create
 }
 ```
 
-### Payment Callback
-```
-POST /api/payments/callback
-```
-*This endpoint is called by CMI after payment processing*
-
 ### Get Transaction Status
+
 ```
 GET /api/payments/status/:transactionId
 ```
 
-**Response:**
-```json
-{
-  "transactionId": "TXN_1234567890_abc123",
-  "status": "completed",
-  "amount": 100.00,
-  "createdAt": "2024-01-01T00:00:00.000Z",
-  "completedAt": "2024-01-01T00:05:00.000Z"
-}
-```
-
 ### Health Check
+
 ```
 GET /health
 ```
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and configure the following variables:
+Create a `.env` file with the following variables:
 
-- `CMI_STORE_KEY`: Your CMI store key
-- `CMI_CLIENT_ID`: Your CMI client ID
-- `SHOP_URL`: Your application URL
-- `OK_URL`: Success page URL
-- `FAIL_URL`: Failure page URL
-- `CALLBACK_URL`: Callback endpoint URL
-- `BUBBLE_ENDPOINT_URL`: Your Bubble.io webhook endpoint
-- `BUBBLE_API_KEY`: Your Bubble.io API key (if required)
-- `PORT`: Server port (default: 3000)
+```env
+# CMI Configuration
+CMI_STORE_KEY=your_cmi_store_key_here
+CMI_CLIENT_ID=your_cmi_client_id_here
+
+# Redis Configuration
+REDIS_URL=redis://localhost:6379
+
+# Bubble.io Integration
+BUBBLE_ENDPOINT_URL=https://your-app.bubbleapps.io/version-test/api/1.1/wf/cmi-callback/initialize
+BUBBLE_API_KEY=your_bubble_api_key_here
+
+# URLs (update for production)
+SHOP_URL=http://localhost:3000
+OK_URL=http://localhost:3000/success
+FAIL_URL=http://localhost:3000/failure
+CALLBACK_URL=http://localhost:3000/api/payments/callback
+
+# Server
+PORT=3000
+```
 
 ## Local Development
 
-1. Install dependencies:
+1. **Install dependencies:**
+
 ```bash
 npm install
 ```
 
-2. Configure environment variables:
+2. **Set up Redis:**
+
 ```bash
-cp .env.example .env
-# Edit .env with your actual values
+# Install Redis locally or use a cloud service
+redis-server
 ```
 
-3. Start the development server:
+3. **Configure environment variables:**
+
+```bash
+# Copy .env.example to .env and fill in your values
+cp .env.example .env
+```
+
+4. **Start development server:**
+
 ```bash
 npm run dev
 ```
 
-4. Start the production server:
-```bash
-npm start
-```
+## Vercel Deployment
 
-## Deployment
+1. **Install Vercel CLI:**
 
-### Vercel
-
-1. Install Vercel CLI:
 ```bash
 npm i -g vercel
 ```
 
-2. Deploy:
+2. **Deploy:**
+
 ```bash
 vercel
 ```
 
-3. Set environment variables in Vercel dashboard or via CLI:
+3. **Set environment variables:**
+
 ```bash
 vercel env add CMI_STORE_KEY
 vercel env add CMI_CLIENT_ID
-# ... add all other environment variables
+vercel env add REDIS_URL
+vercel env add BUBBLE_ENDPOINT_URL
+vercel env add BUBBLE_API_KEY
+vercel env add SHOP_URL
+vercel env add OK_URL
+vercel env add FAIL_URL
+vercel env add CALLBACK_URL
 ```
 
-### Manual Deployment
+4. **Redeploy:**
 
-1. Build the project:
 ```bash
-npm install --production
+vercel --prod
 ```
-
-2. Start the server:
-```bash
-npm start
-```
-
-## Security Features
-
-- ✅ Hash verification for all CMI callbacks
-- ✅ Secure environment variable handling
-- ✅ Input validation
-- ✅ Error handling and logging
-
-## Transaction Statuses
-
-- `pending`: Payment created, waiting for processing
-- `completed`: Payment successful
-- `failed`: Payment failed or rejected
 
 ## Bubble.io Integration
 
-The API automatically notifies your Bubble.io application when:
-- Payment is successful
-- Payment fails
-- Security verification fails
+The API automatically sends webhook notifications to your Bubble.io application with the following data:
+
+```json
+{
+  "transactionId": "TXN_1234567890_abc123",
+  "amount": 100.0,
+  "email": "customer@example.com",
+  "name": "John Doe",
+  "phone": "+212600000000",
+  "description": "Payment for services",
+  "status": "success|failed|security_failed",
+  "completedAt": "2024-01-01T00:05:00.000Z",
+  "failedAt": "2024-01-01T00:05:00.000Z",
+  "cmiResponse": {
+    /* CMI response data */
+  },
+  "guest_id": "1234567890",
+  "donated_to": "Test Donation",
+  "donation_amount": 5,
+  "access_price": 50
+}
+```
+
+## Hash Verification & Custom Data
+
+### How Hash Verification Works
+
+The API uses SHA-512 hash verification to ensure payment security:
+
+1. **Hash Calculation Process:**
+
+   - All POST parameters from CMI are collected
+   - Parameters are sorted alphabetically (case-insensitive)
+   - Each parameter value is URL-decoded and escaped
+   - Values are concatenated with `|` separator
+   - Store key is appended at the end
+   - SHA-512 hash is calculated and converted to base64
+
+2. **Excluded Fields:**
+   - `hash` - The hash field itself
+   - `encoding` - Encoding parameter
+   - **Custom data fields are NOT sent to CMI** - they're stored separately in Redis
+
+### Custom Data Handling
+
+**Why Custom Data is Excluded from Hash Verification:**
+
+- Custom fields (`guest_id`, `donated_to`, `donation_amount`, `access_price`) are **NOT sent to CMI**
+- They are stored separately in Redis with the transaction data
+- This prevents hash verification issues since CMI doesn't know about these fields
+- Custom data is included in Bubble.io webhook notifications after payment completion
+
+**Security Benefits:**
+
+- Hash verification only includes fields that CMI actually sends
+- Custom data remains secure in Redis storage
+- No hash mismatches due to unknown custom fields
+- Clean separation between payment processing and custom business logic
+
+## Redis Storage
+
+- Transactions are stored with 1-hour expiration
+- Custom data is preserved and sent to Bubble.io webhooks
+- Automatic cleanup prevents data accumulation
+- Redis connection is required for the API to function
 
 ## License
 
 MIT
-
-## Support
-
-For issues and questions, please contact the development team.
