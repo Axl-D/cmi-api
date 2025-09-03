@@ -16,13 +16,15 @@
     <script>
       // Configuration - Payment data will be set by Bubble.io
       const CONFIG = {
-        apiUrl: "https://cmi-api.vercel.app/api/payments",
+        apiUrl: "http://localhost:3000/api/payments",
         paymentData: {
           amount: 100, // Amount in MAD
           email: "test@example.com", // Customer email
           name: "John Doe", // Customer name
           phone: "+212600000000", // Customer phone
           description: "Test Payment", // Payment description
+          guest_id: "1234567890",
+          donated_to: "Test Donation",
         },
       };
 

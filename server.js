@@ -86,6 +86,29 @@ app.post("/api/payments/create", async (req, res) => {
       }),
     });
 
+    // DEBUG: Log what we're sending to CMI
+    console.log("=== PAYMENT CREATION DEBUG ===");
+    console.log("Transaction ID:", transactionId);
+    console.log("Data being sent to CMI:");
+    console.log({
+      storekey: CMI_CONFIG.storekey,
+      clientid: CMI_CONFIG.clientid,
+      oid: transactionId,
+      shopurl: CMI_CONFIG.shopurl,
+      okUrl: CMI_CONFIG.okUrl,
+      failUrl: CMI_CONFIG.failUrl,
+      email: email,
+      BillToName: name,
+      amount: amount.toString(),
+      callbackURL: CMI_CONFIG.callbackURL,
+      tel: phone,
+      customData: JSON.stringify({
+        guest_id: guest_id,
+        donated_to: donated_to,
+      }),
+    });
+    console.log("==============================");
+
     // Generate payment form
     const paymentForm = CmiClient.redirect_post();
 
@@ -104,14 +127,21 @@ app.post("/api/payments/create", async (req, res) => {
 app.post("/api/payments/callback", async (req, res) => {
   try {
     const formData = req.body;
-    console.log("CMI Callback received:", formData);
-
+    
     // Get transaction ID
     const transactionId = formData.ReturnOid || formData.oid;
 
     if (!transactionId) {
       return res.status(400).send("Missing transaction ID");
     }
+
+    // DEBUG: Compare what we sent vs what we received
+    console.log("=== CALLBACK COMPARISON DEBUG ===");
+    console.log("Transaction ID:", transactionId);
+    console.log("Fields received from CMI:");
+    console.log("Total fields:", Object.keys(formData).length);
+    console.log("Field names:", Object.keys(formData).sort());
+    console.log("=================================");
 
     // Verify hash (this is the critical security step)
     const isHashValid = verifyCMIHash(formData);
